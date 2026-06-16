@@ -1,0 +1,2 @@
+# Standard library GUI app.
+# Tkinter ships with Python; no external runtime dependency is required here.
