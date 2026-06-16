@@ -5,9 +5,10 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from queue import Empty, Queue
-from tkinter import filedialog, messagebox, scrolledtext, simpledialog, ttk
+from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, simpledialog, ttk
 
 from repo_cleaner.engine import CleanupSession, DEFAULT_CUSTOM_TARGETS, RepoCleanerEngine
 
@@ -99,7 +100,7 @@ class RepoCleanerApp:
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             targets_tab,
-            text="Custom files or directories to remove from history as well. Use commas, for example: .claude, .codex, secrets, backend/private-config",
+            text="Optional: custom files or directories to remove from history as well (empty by default). Use commas, for example: .claude, .codex, secrets, backend/private-config",
             wraplength=520,
         ).grid(row=1, column=0, sticky="w", pady=(10, 6))
         ttk.Entry(targets_tab, textvariable=self.custom_targets_var).grid(row=2, column=0, sticky="ew")
@@ -121,7 +122,15 @@ class RepoCleanerApp:
         footer.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         footer.columnconfigure(0, weight=1)
         ttk.Label(footer, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
-        ttk.Button(footer, text="Quit", command=self.root.destroy).grid(row=0, column=1, sticky="e")
+
+        about = tk.Label(footer, text="About", fg="#1a73e8", cursor="hand2")
+        about_font = tkfont.Font(font=about.cget("font"))
+        about_font.configure(underline=True)
+        about.configure(font=about_font)
+        about.grid(row=0, column=1, sticky="e", padx=(0, 12))
+        about.bind("<Button-1>", lambda _event: self._show_about())
+
+        ttk.Button(footer, text="Quit", command=self.root.destroy).grid(row=0, column=2, sticky="e")
 
         self._set_buttons_enabled(False)
 
@@ -460,6 +469,13 @@ class RepoCleanerApp:
         if session is None:
             return
         self._open_folder(session.backup_dir)
+
+    def _show_about(self) -> None:
+        if messagebox.askyesno(
+            "About Repo Cleaner",
+            "Repo Cleaner\nMade by Ranit Bhowmick\n\nOpen ranitbhowmick.com?",
+        ):
+            webbrowser.open_new("https://ranitbhowmick.com")
 
     def _open_folder(self, path: Path) -> None:
         try:

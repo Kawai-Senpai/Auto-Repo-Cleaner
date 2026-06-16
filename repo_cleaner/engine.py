@@ -18,7 +18,7 @@ EXAMPLE_MARKERS = {"example", "sample", "template", "dist", "default", "defaults
 PATHS_FILE_NAME = "env-paths-to-remove.txt"
 LOG_FILE_NAME = "cleanup-log.txt"
 MANIFEST_FILE_NAME = "manifest.json"
-DEFAULT_CUSTOM_TARGETS = [".claude", ".codex"]
+DEFAULT_CUSTOM_TARGETS: list[str] = []
 
 
 @dataclass(slots=True)
@@ -231,6 +231,37 @@ class RepoCleanerEngine:
     def remote_names(self, session: CleanupSession) -> list[str]:
         result = self.run(session, ["git", "remote"])
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    def snapshot_remotes(self, session: CleanupSession) -> dict[str, str]:
+        # git-filter-repo removes 'origin' after a rewrite as a safety measure.
+        # Capture the remote -> URL mapping beforehand so we can restore it,
+        # otherwise the force-push step has no remote to push to.
+        remotes: dict[str, str] = {}
+        for name in self.remote_names(session):
+            url_result = self.run(
+                session, ["git", "remote", "get-url", name], check=False
+            )
+            url = url_result.stdout.strip()
+            if url:
+                remotes[name] = url
+        if remotes:
+            manifest = self.load_manifest(session)
+            manifest["remotes"] = remotes
+            self.write_manifest(session, manifest)
+        return remotes
+
+    def restore_remotes(self, session: CleanupSession) -> dict[str, str]:
+        manifest = self.load_manifest(session)
+        saved: dict[str, str] = manifest.get("remotes", {})
+        existing = set(self.remote_names(session))
+        restored: dict[str, str] = {}
+        for name, url in saved.items():
+            if name in existing:
+                continue
+            self.run(session, ["git", "remote", "add", name, url], check=False)
+            restored[name] = url
+            self.log_line(session, f"Restored remote '{name}' -> {url}")
+        return restored
 
     def historical_paths(self, session: CleanupSession, *, include_remotes: bool = True) -> list[str]:
         # Discovery scans everything (--all) so remote-only history is caught.
@@ -473,23 +504,30 @@ class RepoCleanerEngine:
         if not manifest.get("backup"):
             raise RuntimeError("No backup found. Create a backup before rewriting history.")
         filter_repo_command = self.resolve_git_filter_repo_command(session)
+        self.snapshot_remotes(session)
         self._drop_remote_tracking_refs(session)
         # Clear any prior filter-repo state so this is a full run, not a metadata-only update.
         stale_state = session.repo_root / ".git" / "filter-repo"
         if stale_state.exists():
             self.log_line(session, "Removing stale .git/filter-repo state for a full rewrite.")
             shutil.rmtree(stale_state, ignore_errors=True)
+        # NOTE: we deliberately do NOT pass --sensitive-data-removal here.
+        # That flag makes filter-repo run `git fetch ... origin +refs/*:refs/*`
+        # before rewriting, which pulls the dirty history back from the server
+        # and resets local branches to it, undoing the purge. We rewrite the
+        # local refs as-is, then the Force Push (mirror) step propagates the
+        # cleaned history to the server.
         self.run(
             session,
             [
                 *filter_repo_command,
                 "--force",
-                "--sensitive-data-removal",
                 "--invert-paths",
                 "--paths-from-file",
                 str(session.paths_file),
             ],
         )
+        self.restore_remotes(session)
         candidates, still_present = self.verify_cleanup(session)
         manifest["filter_result"] = {
             "attempted": True,
@@ -524,7 +562,7 @@ class RepoCleanerEngine:
             "git_available": "yes" if self.git_available() else "no",
             "git_filter_repo_available": "yes" if available else "no",
             "env_examples": ".env, .env.development, .env.local, .env.production, prod.env",
-            "default_custom_targets": ", ".join(DEFAULT_CUSTOM_TARGETS),
+            "default_custom_targets": ", ".join(DEFAULT_CUSTOM_TARGETS) or "(none)",
         }
         self.log_line(session, "DONE prerequisite check.")
         return summary
